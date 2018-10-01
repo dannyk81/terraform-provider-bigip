@@ -34,12 +34,12 @@ func resourceBigipLtmMonitor() *schema.Resource {
 				Required:     true,
 				ValidateFunc: validateParent,
 				ForceNew:     true,
-				Description:  "Existing monitor to inherit from. Must be one of /Common/http, /Common/https, /Common/icmp or /Common/gateway-icmp.",
+				Description:  "Existing monitor to inherit from. Must be one of /Common/http, /Common/https, /Common/icmp, /Common/gateway-icmp, /Common/tcp-half-open or /Common/tcp",
 			},
 			"defaults_from": {
 				Type:        schema.TypeString,
 				Optional:    true,
-				Description: "Existing monitor to inherit from. Must be one of /Common/http, /Common/https, /Common/icmp or /Common/gateway-icmp.",
+				Description: "Specifies the existing monitor from which the system imports settings for the new monitor",
 			},
 
 			"interval": {
@@ -119,13 +119,14 @@ func resourceBigipLtmMonitor() *schema.Resource {
 
 func resourceBigipLtmMonitorCreate(d *schema.ResourceData, meta interface{}) error {
 	client := meta.(*bigip.BigIP)
-	name := d.Get("name").(string)
 
-	log.Println("[INFO] Creating monitor " + name + " :: " + monitorParent(d.Get("parent").(string)))
+	name := d.Get("name").(string)
+	parent := monitorParent(d.Get("parent").(string))
+	log.Printf("[DEBUG] Creating monitor %s::%s", name, parent)
 
 	err := client.CreateMonitor(
 		name,
-		monitorParent(d.Get("parent").(string)),
+		parent,
 		d.Get("defaults_from").(string),
 		d.Get("interval").(int),
 		d.Get("timeout").(int),
@@ -134,73 +135,69 @@ func resourceBigipLtmMonitorCreate(d *schema.ResourceData, meta interface{}) err
 		d.Get("receive_disable").(string),
 	)
 	if err != nil {
-		log.Printf("[ERROR] Unable to Create Monitor (%s) (%v) ", name, err)
-		return err
+		return fmt.Errorf("Error creating Monitor %s: %v", name, err)
 	}
 
 	d.SetId(name)
 
-	resourceBigipLtmMonitorUpdate(d, meta)
-	return resourceBigipLtmMonitorRead(d, meta)
+	return resourceBigipLtmMonitorUpdate(d, meta)
 }
 
 func resourceBigipLtmMonitorRead(d *schema.ResourceData, meta interface{}) error {
 	client := meta.(*bigip.BigIP)
 
 	name := d.Id()
+	parent := monitorParent(d.Get("parent").(string))
+	log.Printf("[DEBUG] Reading Monitor %s::%s", name, parent)
 
 	monitors, err := client.Monitors()
 	if err != nil {
-		log.Printf("[ERROR] Unable to retrieve Monitor (%s) (%v) ", name, err)
-		return err
+		return fmt.Errorf("Unable to retrieve Monitors: %v", err)
 	}
 	if monitors == nil {
-		log.Printf("[WARN] Monitor (%s) not found, removing from state", d.Id())
+		log.Printf("[DEBUG] Monitors not found, removing Monitor %s::%s from state", name, parent)
 		d.SetId("")
 		return nil
 	}
+
 	for _, m := range monitors {
 		if m.FullPath == name {
+			d.Set("name", m.FullPath)
+			d.Set("parent", m.ParentMonitor)
 			d.Set("defaults_from", m.DefaultsFrom)
 			d.Set("interval", m.Interval)
 			d.Set("timeout", m.Timeout)
-			if err := d.Set("send", m.SendString); err != nil {
-				return fmt.Errorf("[DEBUG] Error saving SendString to state for Monitor (%s): %s", d.Id(), err)
-			}
-			if err := d.Set("receive", m.ReceiveString); err != nil {
-				return fmt.Errorf("[DEBUG] Error saving ReceiveString to state for Monitor (%s): %s", d.Id(), err)
-			}
+			d.Set("send", m.SendString)
+			d.Set("receive", m.ReceiveString)
 			d.Set("receive_disable", m.ReceiveDisable)
 			d.Set("reverse", m.Reverse)
 			d.Set("transparent", m.Transparent)
 			d.Set("ip_dscp", m.IPDSCP)
 			d.Set("time_until_up", m.TimeUntilUp)
 			d.Set("manual_resume", m.ManualResume)
-			if err := d.Set("destination", m.Destination); err != nil {
-				return fmt.Errorf("[DEBUG] Error saving Destination to state for Monitor (%s): %s", d.Id(), err)
-			}
-			d.Set("name", name)
+			d.Set("destination", m.Destination)
 			return nil
 		}
 	}
-	return fmt.Errorf("Couldn't find monitor %s", name)
 
+	log.Printf("[DEBUG] Monitor %s::%s not found, removing it from state", name, parent)
+	d.SetId("")
+	return nil
 }
 
 func resourceBigipLtmMonitorExists(d *schema.ResourceData, meta interface{}) (bool, error) {
 	client := meta.(*bigip.BigIP)
 
 	name := d.Id()
-	log.Println("[INFO] Fetching monitor " + name)
+	parent := monitorParent(d.Get("parent").(string))
+	log.Printf("[DEBUG] Checking if Monitor %s::%s exists", name, parent)
 
 	monitors, err := client.Monitors()
 	if err != nil {
-		log.Printf("[ERROR] Unable to retrieve Monitor (%s) (%v) ", name, err)
-		return false, err
+		return false, fmt.Errorf("Unable to retrieve Monitor %s::%s: %v", name, parent, err)
 	}
 	if monitors == nil {
-		log.Printf("[WARN] Monitor (%s) not found, removing from state", d.Id())
-		d.SetId("")
+		log.Printf("[DEBUG] Monitors not found", name, parent)
 		return false, nil
 	}
 	for _, m := range monitors {
@@ -216,6 +213,8 @@ func resourceBigipLtmMonitorUpdate(d *schema.ResourceData, meta interface{}) err
 	client := meta.(*bigip.BigIP)
 
 	name := d.Id()
+	parent := monitorParent(d.Get("parent").(string))
+	log.Printf("[DEBUG] Updating Monitor %s::%s", name, parent)
 
 	m := &bigip.Monitor{
 		Interval:       d.Get("interval").(int),
@@ -231,10 +230,9 @@ func resourceBigipLtmMonitorUpdate(d *schema.ResourceData, meta interface{}) err
 		Destination:    d.Get("destination").(string),
 	}
 
-	err := client.ModifyMonitor(name, monitorParent(d.Get("parent").(string)), m)
+	err := client.ModifyMonitor(name, parent, m)
 	if err != nil {
-		log.Printf("[ERROR] Unable to Update Monitor (%s) (%v) ", name, err)
-		return err
+		return fmt.Errorf("Error updating Monitor %s::%s: %v", name, parent, err)
 	}
 
 	return resourceBigipLtmMonitorRead(d, meta)
@@ -244,12 +242,14 @@ func resourceBigipLtmMonitorDelete(d *schema.ResourceData, meta interface{}) err
 	client := meta.(*bigip.BigIP)
 	name := d.Id()
 	parent := monitorParent(d.Get("parent").(string))
-	log.Println("[Info] Deleting monitor " + name + "::" + parent)
+
+	log.Printf("[DEBUG] Deleting Monitor %s::%s", name, parent)
+
 	err := client.DeleteMonitor(name, parent)
 	if err != nil {
-		log.Printf("[ERROR] Unable to Delete Monitor (%s) (%v) ", name, err)
-		return err
+		return fmt.Errorf("Error deleting Monitor %s::%s: %v", name, parent, err)
 	}
+
 	d.SetId("")
 	return nil
 }
