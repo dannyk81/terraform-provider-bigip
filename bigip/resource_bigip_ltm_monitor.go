@@ -194,10 +194,10 @@ func resourceBigipLtmMonitorExists(d *schema.ResourceData, meta interface{}) (bo
 
 	monitors, err := client.Monitors()
 	if err != nil {
-		return false, fmt.Errorf("Unable to retrieve Monitor %s::%s: %v", name, parent, err)
+		return false, fmt.Errorf("Unable to retrieve Monitors: %v", err)
 	}
 	if monitors == nil {
-		log.Printf("[DEBUG] Monitors not found", name, parent)
+		log.Println("[DEBUG] Monitors not found")
 		return false, nil
 	}
 	for _, m := range monitors {
